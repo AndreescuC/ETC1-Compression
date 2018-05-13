@@ -20,7 +20,7 @@ TextureCompressor::~TextureCompressor() { }	// destructor
 void gpu_find(cl_device_id &device, uint platform_select, uint device_select)
 {
 
-	cout << "[DEBUG]Finding device" << endl;
+	cout << "[DEBUG]Finding device for pair " << platform_select << ", " << device_select << endl;
 	cl_platform_id platform;
 	cl_uint platform_num = 0;
 	cl_platform_id* platform_list = NULL;
@@ -73,11 +73,12 @@ void gpu_find(cl_device_id &device, uint platform_select, uint device_select)
 
 		/* get num of available OpenCL devices type ALL on the selected platform */
 		if(clGetDeviceIDs(platform,
-						  CL_DEVICE_TYPE_ALL, 0, NULL, &device_num) == NULL) {
+						  CL_DEVICE_TYPE_ALL, 0, NULL, &device_num) == CL_DEVICE_NOT_FOUND) {
 			device_num = 0;
+			cout << "[DEBUG]No devices found, continuing" << endl;
 			continue;
 		}
-
+		cout << "[DEBUG]Devices found" << endl;
 		device_list = new cl_device_id[device_num];
 		DIE(device_list == NULL, "alloc devices");
 
@@ -144,11 +145,13 @@ void gpu_profile_kernel(cl_device_id device, const uint8_t* src, uint8_t* dst, i
 	string kernel_src;
 
 	double timeDiff = 0;
-
+	cout << "[DEBUG]Creating context for device " << endl;
 	/* create a context for the device */
-	context = clCreateContext(0, 1, &device, NULL, NULL, &ret);
+	context = clCreateContext(NULL, 1, &device, NULL, NULL, &ret);
+	cout << "[DEBUG]Creating context[END]" << endl;
 	CL_ERR( ret );
 
+	cout << "[DEBUG]Creating cmd" << endl;
 	/* create a command queue for the device in the context */
 	cmdQueue = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &ret);
 	CL_ERR( ret );
@@ -177,10 +180,12 @@ void gpu_profile_kernel(cl_device_id device, const uint8_t* src, uint8_t* dst, i
     cl_mem devDstBuf = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(cl_uchar) * dstSize, NULL, &ret);
     CL_ERR( ret );
 
+	cout << "[DEBUG]Writing buffer src" << endl;
     /* copy the buffers back */
     CL_ERR( clEnqueueWriteBuffer(cmdQueue, devSrcBuf, CL_TRUE, 0,
                                  sizeof(uint8_t) * srcSize, srcBuf, 0, NULL, NULL));
 
+	cout << "[DEBUG]Reading kernel" << endl;
 	/* retrieve kernel source */
 	read_kernel("compress.cl", kernel_src);
 	const char* kernel_c_str = kernel_src.c_str();
@@ -269,6 +274,9 @@ unsigned long TextureCompressor::compress(const uint8_t* src,
 
 	/* search and select platform/devices in OpenCL */
 	gpu_find(device, platform_select, device_select);
+	DIE(device == 0, "check valid device");
+
+
 
 	/* perform kernel profile using selected device (GPU NVIDIA TESLA) */
 	gpu_profile_kernel(device, src, dst, width, height);

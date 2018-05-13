@@ -1,4 +1,4 @@
-typedef __global uchar global_uint8_t;
+typedef uchar uint8_t;
 typedef uint uint32_t;
 typedef ushort uint16_t;
 
@@ -13,14 +13,19 @@ union Color {
     uint32_t bits;
 };
 
-__kernel void compress_func(global_uint8_t src, global_uint8_t dst, int width, int height)
+void memcpycl(__global char *from,__global char *to, size_t n)
 {
-    printf("Entered kernel\n");
+    for (int i=0; i<n; i++) {
+        to[i] = from[i];
+    }
+}
+
+__kernel void compress_func(__global uchar* src, __global uchar* dst, int width, int height)
+{
     int y = get_global_id(0) * 4;
     int x = get_global_id(1) * 4;
 
     for (int i=0; i<5; i++) {
         dst[i] = 85;
     }
-    printf("Exited kernel\n");
 }
