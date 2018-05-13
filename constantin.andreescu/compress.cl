@@ -1,8 +1,11 @@
 #define ALIGNAS(X)	__attribute__((aligned(X)))
+#define UINT32_MAX   (4294967295U)
+#define INT32_MAX   (2147483647)
 
 typedef uchar uint8_t;
 typedef uint uint32_t;
 typedef ushort uint16_t;
+typedef short int16_t;
 
 union Color {
     struct BgraColorType {
@@ -17,9 +20,9 @@ union Color {
 
 uint8_t clampColors(int value)
 {
-    return val < 0
+    return value < 0
            ? 0
-           : (value > 255 ? max : 255);
+           : (value > 255 ? 255 : value);
 }
 
 uint8_t round_to_4_bits(float value)
@@ -38,14 +41,21 @@ uint8_t round_to_5_bits(float value)
     return result;
 }
 
-void memcpycl(__global char *from,__global char *to, size_t n)
+void memcpycl(char *from, __global char *to, size_t n)
 {
     for (int i=0; i<n; i++) {
         to[i] = from[i];
     }
 }
 
-ALIGNAS(16) static const int16_t g_codeword_tables[8][4] = {
+void memsetcl(__global uint8_t *buff, int n)
+{
+    for (int i=0; i<n; i++) {
+        buff[i] = 0;
+    }
+}
+
+ALIGNAS(16) __constant int16_t g_codeword_tables[8][4] = {
         {-8, -2, 2, 8},
         {-17, -5, 5, 17},
         {-29, -9, 9, 29},
@@ -56,27 +66,27 @@ ALIGNAS(16) static const int16_t g_codeword_tables[8][4] = {
         {-183, -47, 47, 183}
 };
 
-static const uint8_t g_mod_to_pix[4] = {3, 2, 0, 1};
+__constant uint8_t g_mod_to_pix[4] = {3, 2, 0, 1};
 
-static const uint8_t g_idx_to_num[4][8] = {
+__constant uint8_t g_idx_to_num[4][8] = {
         {0, 4, 1, 5, 2, 6, 3, 7},        // Vertical block 0.
         {8, 12, 9, 13, 10, 14, 11, 15},  // Vertical block 1.
         {0, 4, 8, 12, 1, 5, 9, 13},      // Horizontal block 0.
         {2, 6, 10, 14, 3, 7, 11, 15}     // Horizontal block 1.
 };
 
-inline Color makeColor(const Color& base, int16_t lum) {
+union Color makeColor(const union Color base, int16_t lum) {
     int b = (int)(base.channels.b) + lum;
     int g = (int)(base.channels.g) + lum;
     int r = (int)(base.channels.r) + lum;
-    Color color;
+    union Color color;
     color.channels.b = (uint8_t)(clampColors(b));
     color.channels.g = (uint8_t)(clampColors(g));
     color.channels.r = (uint8_t)(clampColors(r));
     return color;
 }
 
-inline uint32_t getColorError(const Color& u, const Color& v) {
+uint32_t getColorError(const union Color u, const union Color v) {
 #ifdef USE_PERCEIVED_ERROR_METRIC
     float delta_b = (float)(u.channels.b) - v.channels.b;
 	float delta_g = (float)(u.channels.g) - v.channels.g;
@@ -92,17 +102,17 @@ inline uint32_t getColorError(const Color& u, const Color& v) {
 #endif
 }
 
-inline void WriteColors444(uint8_t* block, const Color& color0, const Color& color1)
+void WriteColors444(__global uint8_t* block, const union Color color0, const union Color color1)
 {
     block[0] = (color0.channels.r & 0xf0) | (color1.channels.r >> 4);
     block[1] = (color0.channels.g & 0xf0) | (color1.channels.g >> 4);
     block[2] = (color0.channels.b & 0xf0) | (color1.channels.b >> 4);
 }
 
-inline void WriteColors555(uint8_t* block, const Color& color0, const Color& color1) 
+void WriteColors555(__global uint8_t* block, const union Color color0, const union Color color1)
 {
     // Table for conversion to 3-bit two complement format.
-    static const uint8_t two_compl_trans_table[8] = {
+    __constant uint8_t two_compl_trans_table[8] = {
             4,  // -4 (100b)
             5,  // -3 (101b)
             6,  // -2 (110b)
@@ -126,14 +136,14 @@ inline void WriteColors555(uint8_t* block, const Color& color0, const Color& col
     block[2] = (color0.channels.b & 0xf8) | two_compl_trans_table[delta_b + 4];
 }
 
-inline void WriteCodewordTable(uint8_t* block, uint8_t sub_block_id, uint8_t table)
+void WriteCodewordTable(__global uint8_t* block, uint8_t sub_block_id, uint8_t table)
 {
     uint8_t shift = (2 + (3 - sub_block_id * 3));
     block[3] &= ~(0x07 << shift);
     block[3] |= table << shift;
 }
 
-inline void WritePixelData(uint8_t* block, uint32_t pixel_data)
+void WritePixelData(__global uint8_t* block, uint32_t pixel_data)
 {
     block[4] |= pixel_data >> 24;
     block[5] |= (pixel_data >> 16) & 0xff;
@@ -141,32 +151,32 @@ inline void WritePixelData(uint8_t* block, uint32_t pixel_data)
     block[7] |= pixel_data & 0xff;
 }
 
-inline void WriteFlip(uint8_t* block, bool flip)
+void WriteFlip(__global uint8_t* block, bool flip)
 {
     block[3] &= ~0x01;
     block[3] |= (uint8_t)(flip);
 }
 
-inline void WriteDiff(uint8_t* block, bool diff)
+void WriteDiff(__global uint8_t* block, bool diff)
 {
     block[3] &= ~0x02;
     block[3] |= (uint8_t)(diff) << 1;
 }
 
-inline void ExtractBlock(uint8_t* dst, const uint8_t* src, int width)
+/*void ExtractBlock(__global uint8_t* dst, const uint8_t* src, int width)
 {
     for (int j = 0; j < 4; ++j) {
         memcpycl(&dst[j * 4 * 4], src, 4 * 4);
         src += width * 4;
     }
-}
+}*/
 
-inline Color makeColor444(const float* bgr)
+union Color makeColor444(const float* bgr)
 {
     uint8_t b4 = round_to_4_bits(bgr[0]);
     uint8_t g4 = round_to_4_bits(bgr[1]);
     uint8_t r4 = round_to_4_bits(bgr[2]);
-    Color bgr444;
+    union Color bgr444;
     bgr444.channels.b = (b4 << 4) | b4;
     bgr444.channels.g = (g4 << 4) | g4;
     bgr444.channels.r = (r4 << 4) | r4;
@@ -175,12 +185,12 @@ inline Color makeColor444(const float* bgr)
     return bgr444;
 }
 
-inline Color makeColor555(const float* bgr)
+union Color makeColor555(const float* bgr)
 {
     uint8_t b5 = round_to_5_bits(bgr[0]);
     uint8_t g5 = round_to_5_bits(bgr[1]);
     uint8_t r5 = round_to_5_bits(bgr[2]);
-    Color bgr555;
+    union Color bgr555;
     bgr555.channels.b = (b5 << 3) | (b5 >> 2);
     bgr555.channels.g = (g5 << 3) | (g5 >> 2);
     bgr555.channels.r = (r5 << 3) | (r5 >> 2);
@@ -189,7 +199,7 @@ inline Color makeColor555(const float* bgr)
     return bgr555;
 }
 
-void getAverageColor(const Color* src, float* avg_color)
+void getAverageColor(const union Color* src, float* avg_color)
 {
     uint32_t sum_b = 0, sum_g = 0, sum_r = 0;
 
@@ -205,11 +215,11 @@ void getAverageColor(const Color* src, float* avg_color)
     avg_color[2] = (float)(sum_r) * kInv8;
 }
 
-unsigned long computeLuminance(uint8_t* block,
-                               const Color* src,
-                               const Color& base,
+unsigned long computeLuminance(__global uint8_t* block,
+                               const union Color* src,
+                               const union Color base,
                                int sub_block_id,
-                               const uint8_t* idx_to_num_tab,
+                               __constant uint8_t* idx_to_num_tab,
                                unsigned long threshold)
 {
     uint32_t best_tbl_err = threshold;
@@ -221,7 +231,7 @@ unsigned long computeLuminance(uint8_t* block,
     for (unsigned int tbl_idx = 0; tbl_idx < 8; ++tbl_idx) {
         // Pre-compute all the candidate colors; combinations of the base color and
         // all available luminance values.
-        Color candidate_color[4];  // [modifier]
+        union Color candidate_color[4];  // [modifier]
         for (unsigned int mod_idx = 0; mod_idx < 4; ++mod_idx) {
             int16_t lum = g_codeword_tables[tbl_idx][mod_idx];
             candidate_color[mod_idx] = makeColor(base, lum);
@@ -234,7 +244,7 @@ unsigned long computeLuminance(uint8_t* block,
             // smallest error.
             uint32_t best_mod_err = threshold;
             for (unsigned int mod_idx = 0; mod_idx < 4; ++mod_idx) {
-                const Color& color = candidate_color[mod_idx];
+                const union Color color = candidate_color[mod_idx];
 
                 uint32_t mod_err = getColorError(src[i], color);
                 if (mod_err < best_mod_err) {
@@ -287,7 +297,7 @@ unsigned long computeLuminance(uint8_t* block,
  * block. If it's not the function will bail out without writing anything to
  * the destination buffer.
  */
-bool tryCompressSolidBlock(uint8_t* dst, const Color* src, unsigned long* error)
+bool tryCompressSolidBlock(__global uint8_t* dst, const union Color* src, unsigned long* error)
 {
     for (unsigned int i = 1; i < 16; ++i) {
         if (src[i].bits != src[0].bits)
@@ -295,12 +305,12 @@ bool tryCompressSolidBlock(uint8_t* dst, const Color* src, unsigned long* error)
     }
 
     // Clear destination buffer so that we can "or" in the results.
-    memset(dst, 0, 8);
+    memsetcl(dst, 8);
 
     float src_color_float[3] = {(float)(src->channels.b),
                                 (float)(src->channels.g),
                                 (float)(src->channels.r)};
-    Color base = makeColor555(src_color_float);
+    union Color base = makeColor555(src_color_float);
 
     WriteDiff(dst, true);
     WriteFlip(dst, false);
@@ -317,7 +327,7 @@ bool tryCompressSolidBlock(uint8_t* dst, const Color* src, unsigned long* error)
         // smallest error.
         for (unsigned int mod_idx = 0; mod_idx < 4; ++mod_idx) {
             int16_t lum = g_codeword_tables[tbl_idx][mod_idx];
-            const Color& color = makeColor(base, lum);
+            const union Color color = makeColor(base, lum);
 
             uint32_t mod_err = getColorError(*src, color);
             if (mod_err < best_mod_err) {
@@ -356,16 +366,16 @@ bool tryCompressSolidBlock(uint8_t* dst, const Color* src, unsigned long* error)
     return true;
 }
 
-unsigned long compressBlock(uint8_t* dst, const Color* ver_src, const Color* hor_src, unsigned long threshold)
+unsigned long compressBlock(__global uint8_t* dst, const union Color* ver_src, const union Color* hor_src, unsigned long threshold)
 {
     unsigned long solid_error = 0;
     if (tryCompressSolidBlock(dst, ver_src, &solid_error)) {
         return solid_error;
     }
 
-    const Color* sub_block_src[4] = {ver_src, ver_src + 8, hor_src, hor_src + 8};
+    const union Color* sub_block_src[4] = {ver_src, ver_src + 8, hor_src, hor_src + 8};
 
-    Color sub_block_avg[4];
+    union Color sub_block_avg[4];
     bool use_differential[2] = {true, true};
 
     // Compute the average color for each sub block and determine if differential
@@ -373,11 +383,11 @@ unsigned long compressBlock(uint8_t* dst, const Color* ver_src, const Color* hor
     for (unsigned int i = 0, j = 1; i < 4; i += 2, j += 2) {
         float avg_color_0[3];
         getAverageColor(sub_block_src[i], avg_color_0);
-        Color avg_color_555_0 = makeColor555(avg_color_0);
+        union Color avg_color_555_0 = makeColor555(avg_color_0);
 
         float avg_color_1[3];
         getAverageColor(sub_block_src[j], avg_color_1);
-        Color avg_color_555_1 = makeColor555(avg_color_1);
+        union Color avg_color_555_1 = makeColor555(avg_color_1);
 
         for (unsigned int light_idx = 0; light_idx < 3; ++light_idx) {
             int u = avg_color_555_0.components[light_idx] >> 3;
@@ -409,7 +419,7 @@ unsigned long compressBlock(uint8_t* dst, const Color* ver_src, const Color* hor
             sub_block_err[2] + sub_block_err[3] < sub_block_err[0] + sub_block_err[1];
 
     // Clear destination buffer so that we can "or" in the results.
-    memset(dst, 0, 8);
+    memsetcl(dst, 8);
 
     WriteDiff(dst, use_differential[!!flip]);
     WriteFlip(dst, flip);
@@ -441,37 +451,37 @@ unsigned long compressBlock(uint8_t* dst, const Color* ver_src, const Color* hor
     return lumi_error1 + lumi_error2;
 }
 
-__kernel void compress_func(__global int* src, __global int* dst, int width, int height)
+__kernel void compress_func(__global uint8_t* src, __global uint8_t* dst, int width, int height)
 {
 //    int y = get_global_id(0) * 4;
 //    int x = get_global_id(1) * 4;
 
-    Color ver_blocks[16];
-    Color hor_blocks[16];
+    union Color ver_blocks[16];
+    union Color hor_blocks[16];
 
     unsigned long compressed_error = 0;
 
     for (int y = 0; y < height; y += 4, src += width * 4 * 4) {
         for (int x = 0; x < width; x += 4, dst += 8) {
 
-            const Color* row0 = (const Color*)(src + x * 4);
-            const Color* row1 = row0 + width;
-            const Color* row2 = row1 + width;
-            const Color* row3 = row2 + width;
+            __global union Color* row0 = (__global union Color*)(src + x * 4);
+            __global union Color* row1 = row0 + width;
+            __global union Color* row2 = row1 + width;
+            __global union Color* row3 = row2 + width;
 
-            memcpycl(ver_blocks, row0, 8);
-            memcpycl(ver_blocks + 2, row1, 8);
-            memcpycl(ver_blocks + 4, row2, 8);
-            memcpycl(ver_blocks + 6, row3, 8);
-            memcpycl(ver_blocks + 8, row0 + 2, 8);
-            memcpycl(ver_blocks + 10, row1 + 2, 8);
-            memcpycl(ver_blocks + 12, row2 + 2, 8);
-            memcpycl(ver_blocks + 14, row3 + 2, 8);
+            memcpycl((char*)(ver_blocks), (__global char*)row0, 8);
+            memcpycl((char*)(ver_blocks + 2), (__global char*)row1, 8);
+            memcpycl((char*)(ver_blocks + 4), (__global char*)row2, 8);
+            memcpycl((char*)(ver_blocks + 6), (__global char*)row3, 8);
+            memcpycl((char*)(ver_blocks + 8), (__global char*)(row0 + 2), 8);
+            memcpycl((char*)(ver_blocks + 10), (__global char*)(row1 + 2), 8);
+            memcpycl((char*)(ver_blocks + 12), (__global char*)(row2 + 2), 8);
+            memcpycl((char*)(ver_blocks + 14), (__global char*)(row3 + 2), 8);
 
-            memcpycl(hor_blocks, row0, 16);
-            memcpycl(hor_blocks + 4, row1, 16);
-            memcpycl(hor_blocks + 8, row2, 16);
-            memcpycl(hor_blocks + 12, row3, 16);
+            memcpycl((char*)hor_blocks, (__global char*)row0, 16);
+            memcpycl((char*)(hor_blocks + 4), (__global char*)row1, 16);
+            memcpycl((char*)(hor_blocks + 8), (__global char*)row2, 16);
+            memcpycl((char*)(hor_blocks + 12), (__global char*)row3, 16);
 
             compressed_error += compressBlock(dst, ver_blocks, hor_blocks, INT32_MAX);
         }
